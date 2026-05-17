@@ -45,6 +45,12 @@ class ThreatCode(IntEnum):
     GUNSHOT = 0x02
     VEHICLE = 0x03
     AMBIENT = 0x04
+    EXPLOSION = 0x05
+    TRAP_SNAP = 0x06
+    DRONE = 0x07
+    DOG_BARK = 0x08
+    AXE = 0x09
+    POACHER = 0x0A
 
 
 class PayloadFlags:
@@ -101,6 +107,9 @@ class AlertPayload:
         names = {
             0x00: "UNKNOWN", 0x01: "CHAINSAW",
             0x02: "GUNSHOT", 0x03: "VEHICLE", 0x04: "AMBIENT",
+            0x05: "EXPLOSION", 0x06: "TRAP_SNAP",
+            0x07: "DRONE", 0x08: "DOG_BARK", 0x09: "AXE",
+            0x0A: "POACHER",
         }
         return names.get(self.threat_class, "UNKNOWN")
 

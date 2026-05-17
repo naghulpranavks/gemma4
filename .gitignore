@@ -1,42 +1,22 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environment
+# Python Virtual Environment
 venv/
-.venv/
 env/
+__pycache__/
+*.pyc
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs & DB
-*.log
+# Database
 *.db
 alerts.db
-sentinel.log
 
-# OS
+# Machine Learning Models (Too large for GitHub)
+*.pt
+best.pt
+yolov8n.pt
+
+# IDE / System files
+.vscode/
+.idea/
 .DS_Store
-Thumbs.db
 
-# Model files (too large for git)
-*.gguf
-*.bin
-*.safetensors
-eco_mesh_model/
-eco_mesh_gguf/
-eco_mesh_checkpoints/
-
-# Colab artifacts
-ESC-50/
-
-# Gemini
-.gemini/
+# Temporary outputs
+roboflow_output.txt

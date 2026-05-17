@@ -234,6 +234,187 @@ async def stream_alerts():
     )
 
 
+@app.get("/api/stats")
+async def get_stats():
+    """Get aggregated analytics for the dashboard."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    # Total counts by threat class
+    threat_counts = {}
+    rows = conn.execute("""
+        SELECT threat_class, COUNT(*) as cnt
+        FROM alerts
+        WHERE threat_class NOT IN ('AMBIENT', 'UNKNOWN')
+        GROUP BY threat_class
+    """).fetchall()
+    for row in rows:
+        threat_counts[row["threat_class"]] = row["cnt"]
+
+    # Total alerts and threats
+    total_alerts = conn.execute("SELECT COUNT(*) as c FROM alerts").fetchone()["c"]
+    total_threats = conn.execute(
+        "SELECT COUNT(*) as c FROM alerts WHERE threat_class NOT IN ('AMBIENT', 'UNKNOWN')"
+    ).fetchone()["c"]
+
+    # Hourly activity (last 24h) — use received_at for time bucketing
+    hourly = []
+    rows = conn.execute("""
+        SELECT
+            CAST(strftime('%H', datetime(received_at, 'unixepoch', 'localtime')) AS INTEGER) as hour,
+            COUNT(*) as total,
+            SUM(CASE WHEN threat_class NOT IN ('AMBIENT', 'UNKNOWN') THEN 1 ELSE 0 END) as threats
+        FROM alerts
+        GROUP BY hour
+        ORDER BY hour
+    """).fetchall()
+    hour_map = {row["hour"]: {"total": row["total"], "threats": row["threats"]} for row in rows}
+    for h in range(24):
+        hourly.append({
+            "hour": h,
+            "total": hour_map.get(h, {}).get("total", 0),
+            "threats": hour_map.get(h, {}).get("threats", 0),
+        })
+
+    # Per-node summary
+    node_stats = []
+    rows = conn.execute("""
+        SELECT
+            node_id,
+            COUNT(*) as total_reports,
+            SUM(CASE WHEN threat_class NOT IN ('AMBIENT', 'UNKNOWN') THEN 1 ELSE 0 END) as threat_count,
+            AVG(CASE WHEN battery_pct IS NOT NULL THEN battery_pct END) as avg_battery,
+            AVG(CASE WHEN cpu_temp_c IS NOT NULL THEN cpu_temp_c END) as avg_temp,
+            MAX(timestamp_iso) as last_seen
+        FROM alerts
+        GROUP BY node_id
+        ORDER BY node_id
+    """).fetchall()
+    for row in rows:
+        node_stats.append({
+            "node_id": row["node_id"],
+            "total_reports": row["total_reports"],
+            "threat_count": row["threat_count"],
+            "avg_battery": round(row["avg_battery"] or 0, 1),
+            "avg_temp": round(row["avg_temp"] or 0, 1),
+            "last_seen": row["last_seen"],
+        })
+
+    # System uptime (time between first and last alert)
+    first_ts = conn.execute("SELECT MIN(received_at) as t FROM alerts").fetchone()["t"]
+    last_ts = conn.execute("SELECT MAX(received_at) as t FROM alerts").fetchone()["t"]
+    uptime_seconds = (last_ts - first_ts) if first_ts and last_ts else 0
+
+    conn.close()
+
+    return {
+        "threat_counts": threat_counts,
+        "total_alerts": total_alerts,
+        "total_threats": total_threats,
+        "hourly_activity": hourly,
+        "node_stats": node_stats,
+        "uptime_seconds": round(uptime_seconds, 0),
+        "active_nodes": len(node_stats),
+    }
+
+
+@app.get("/api/export/csv")
+async def export_csv():
+    """Export all alerts as a downloadable CSV file."""
+    import io
+    import csv
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT timestamp_iso, msg_type, threat_class, confidence,
+               latitude, longitude, node_id, battery_pct, cpu_temp_c,
+               audio_db, received_at
+        FROM alerts ORDER BY id DESC
+    """).fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Timestamp", "Type", "Threat", "Confidence",
+        "Latitude", "Longitude", "Node ID", "Battery %",
+        "CPU Temp (C)", "Audio dB", "Received At",
+    ])
+    for row in rows:
+        writer.writerow([
+            row["timestamp_iso"], row["msg_type"], row["threat_class"],
+            row["confidence"], row["latitude"], row["longitude"],
+            row["node_id"], row["battery_pct"], row["cpu_temp_c"],
+            row["audio_db"], row["received_at"],
+        ])
+
+    csv_content = output.getvalue()
+    return StreamingResponse(
+        iter([csv_content]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=ecomesh_alerts.csv",
+        },
+    )
+
+
+@app.get("/api/export/report")
+async def export_report():
+    """Generate a structured JSON summary report."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    total = conn.execute("SELECT COUNT(*) as c FROM alerts").fetchone()["c"]
+    threats = conn.execute(
+        "SELECT COUNT(*) as c FROM alerts WHERE threat_class NOT IN ('AMBIENT', 'UNKNOWN')"
+    ).fetchone()["c"]
+
+    by_type = {}
+    for row in conn.execute(
+        "SELECT threat_class, COUNT(*) as c FROM alerts GROUP BY threat_class"
+    ).fetchall():
+        by_type[row["threat_class"]] = row["c"]
+
+    nodes = []
+    for row in conn.execute("""
+        SELECT node_id, COUNT(*) as reports,
+               SUM(CASE WHEN threat_class NOT IN ('AMBIENT','UNKNOWN') THEN 1 ELSE 0 END) as threats,
+               MIN(timestamp_iso) as first_seen, MAX(timestamp_iso) as last_seen,
+               AVG(battery_pct) as avg_battery
+        FROM alerts GROUP BY node_id
+    """).fetchall():
+        nodes.append({
+            "node_id": row["node_id"],
+            "reports": row["reports"],
+            "threats": row["threats"],
+            "first_seen": row["first_seen"],
+            "last_seen": row["last_seen"],
+            "avg_battery": round(row["avg_battery"] or 0, 1),
+        })
+
+    first_ts = conn.execute("SELECT MIN(received_at) as t FROM alerts").fetchone()["t"]
+    last_ts = conn.execute("SELECT MAX(received_at) as t FROM alerts").fetchone()["t"]
+    conn.close()
+
+    return {
+        "report_type": "Eco-Acoustic Mesh — Ranger Shift Report",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "monitoring_period": {
+            "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(first_ts)) if first_ts else None,
+            "end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(last_ts)) if last_ts else None,
+            "duration_seconds": round(last_ts - first_ts, 0) if first_ts and last_ts else 0,
+        },
+        "summary": {
+            "total_reports": total,
+            "total_threats": threats,
+            "threat_rate_pct": round((threats / total * 100) if total else 0, 1),
+        },
+        "threats_by_type": by_type,
+        "node_performance": nodes,
+    }
+
+
 @app.get("/api/health")
 async def health():
     return {"status": "healthy", "timestamp": time.time()}
