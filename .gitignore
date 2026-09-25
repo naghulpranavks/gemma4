@@ -20,3 +20,4 @@ yolov8n.pt
 
 # Temporary outputs
 roboflow_output.txt
+.pytest_cache/
